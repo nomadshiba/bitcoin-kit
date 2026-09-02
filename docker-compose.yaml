@@ -97,7 +97,7 @@ services:
             '
 
     datum-gateway:
-        build: https://github.com/OCEAN-xyz/datum_gateway.git#v0.4.1beta
+        build: ghcr.io/retropex/datum:v1.14-blake2b-2@sha256:5895b55a5a1b8d76fbe49a6fbaaed3bdc98a847299e8b3107e631146faa6d58a
         extra_hosts:
             - "host.docker.internal:host-gateway"
             - "host.containers.internal:host-gateway"
