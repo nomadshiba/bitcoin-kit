@@ -1,66 +1,31 @@
 services:
-    electrs:
-        build: https://github.com/romanz/electrs.git#v0.10.10
+    fulcrum:
+        image: docker.io/cculianu/fulcrum:v2.1.2
         extra_hosts:
             - "host.docker.internal:host-gateway"
             - "host.containers.internal:host-gateway"
         ports:
             - "50001:50001"
-        entrypoint: >
-            sh -c '
-                set -e;
-                mkdir -p /root/.electrs;
-                echo -n "auth=\"${BITCOIN_RPC_USER}:${BITCOIN_RPC_PASS}\"" > /root/.electrs/config.toml;
-                exec electrs \
-                    --db-dir "/root/.electrs/db" \
-                    --daemon-dir "/root/.bitcoin" \
-                    --daemon-rpc-addr "${BITCOIN_HOST}:${BITCOIN_RPC_PORT}" \
-                    --daemon-p2p-addr "${BITCOIN_HOST}:${BITCOIN_P2P_PORT}" \
-                    --electrum-rpc-addr "0.0.0.0:50001" \
-                    --log-filters "debug"
-            '
-        volumes:
-            - ${BITCOIN_DATA}:/root/.bitcoin:ro
-            - ./electrs:/root/.electrs:U,Z
-        restart: unless-stopped
-
-    electrs-tls:
-        image: alpine:3
-        depends_on:
-            - electrs
-        ports:
             - "50002:50002"
         volumes:
-            - ./electrs/tls:/tls:U,Z
+            - ./fulcrum:/data:U,Z
         entrypoint: >
             sh -c '
                 set -e;
-                apk add --no-cache stunnel openssl;
-                mkdir -p /tls;
-
-                if [ ! -f /tls/cert.pem ] || [ ! -f /tls/key.pem ]; then
-                    echo "🔐 Generating self-signed TLS cert for electrs…";
-                    openssl req -new -x509 -days 365 -nodes \
-                        -subj "/CN=${ELECTRS_TLS_CN:-electrs}" \
-                        -out /tls/cert.pem -keyout /tls/key.pem;
-                fi;
-
-                mkdir -p /etc/stunnel;
+                mkdir -p /data/db;
                 echo "
-                foreground = yes
-                debug = 3
+                datadir = /data/db
+                bitcoind = ${BITCOIN_HOST}:${BITCOIN_RPC_PORT}
+                rpcuser = ${BITCOIN_RPC_USER}
+                rpcpassword = ${BITCOIN_RPC_PASS}
+                tcp = 0.0.0.0:50001
+                ssl = 0.0.0.0:50002
+                peering = false
+                announce = false
+                " > /data/fulcrum.conf;
 
-                [electrs]
-                accept = 0.0.0.0:50002
-                connect = electrs:50001
-                cert = /tls/cert.pem
-                key  = /tls/key.pem
-                " > /etc/stunnel/electrs.conf;
-
-                exec stunnel /etc/stunnel/electrs.conf;
+                exec /entrypoint.sh Fulcrum /data/fulcrum.conf;
             '
-        environment:
-            - ELECTRS_TLS_CN=electrs
         restart: unless-stopped
 
     setup-datum-gateway:
@@ -73,11 +38,11 @@ services:
                 set -e;
                 apk add --no-cache jq wget;
                 echo "📄 Preparing config.json...";
-            
+
                 if [ ! -f /datum/config.json ]; then
                     echo "⬇️ No config found, downloading default example...";
                     wget -qO /datum/config.json \
-                        https://raw.githubusercontent.com/OCEAN-xyz/datum_gateway/refs/tags/v0.4.1beta/doc/example_datum_gateway_config.json;
+                        https://raw.githubusercontent.com/Retropex/datum-docker/main/settings/datum_gateway_config.json;
                 fi
                 jq \
                     ".bitcoind.rpcurl = \"http://${BITCOIN_HOST}:${BITCOIN_RPC_PORT}\" 
@@ -109,76 +74,6 @@ services:
             - ${BITCOIN_DATA}:/app/.bitcoin:ro
         restart: unless-stopped
 
-    cln:
-        image: docker.io/elementsproject/lightningd:v25.12
-        restart: unless-stopped
-        extra_hosts:
-            - "host.docker.internal:host-gateway"
-            - "host.containers.internal:host-gateway"
-        entrypoint: >
-            sh -c '
-            	ln -s /app/data/cln-data/bitcoin /root/.lightning/bitcoin;
-                exec lightningd \
-                    --network=bitcoin \
-                    --alias=MyNode \
-                    --clnrest-port=3010 \
-                    --clnrest-protocol=http \
-                    --clnrest-host=0.0.0.0 \
-                    --bitcoin-rpcconnect=${BITCOIN_HOST} \
-                    --bitcoin-rpcport=${BITCOIN_RPC_PORT} \
-                    --bitcoin-rpcuser=${BITCOIN_RPC_USER} \
-                    --bitcoin-rpcpassword=${BITCOIN_RPC_PASS} \
-                    --bitcoin-datadir=/app/bitcoin \
-                    --lightning-dir=/app/data/cln-data;
-            '
-        volumes:
-            - ./core-lightning:/app/data:z
-            - ${BITCOIN_DATA}:/app/bitcoin:ro,z
-        ports:
-            - "9735:9735"
-            - "3010:3010"
-
-    cln-app:
-        image: ghcr.io/elementsproject/cln-application:25.07.3
-        restart: unless-stopped
-        command: >
-            sh -c '
-                set -e;
-                if [ ! -f /app/data/config.json ]; then
-                    echo "📄 No config found, creating default /app/data/config.json";
-                    mkdir -p /app/data;
-                    echo "{
-                        \"unit\": \"SATS\",
-                        \"fiatUnit\": \"USD\",
-                        \"appMode\": \"DARK\",
-                        \"isLoading\": false,
-                        \"error\": null,
-                        \"singleSignOn\": true,
-                        \"password\": \"\"
-                    }" > /app/data/config.json;
-                fi
-                npm run start;
-            '
-        depends_on:
-            - cln
-        environment:
-            - BITCOIN_NETWORK=bitcoin
-            - APP_PROTOCOL=https
-            - APP_HOST=0.0.0.0
-            - APP_PORT=2103
-            - APP_MODE=production
-            - APP_CONNECT=REST
-            - APP_CONFIG_FILE=/app/data/config.json
-            - LIGHTNING_REST_PROTOCOL=http
-            - LIGHTNING_REST_HOST=cln
-            - LIGHTNING_REST_PORT=3010
-            - LIGHTNING_DATA_DIR=/app/data/cln-data
-            - LIGHTNING_VARS_FILE=/app/data/cln-data/vars
-        ports:
-            - "2103:2103"
-        volumes:
-            - ./core-lightning:/app/data:z
-
     mempool-web:
         image: ghcr.io/retropex/mempoolfrontend:v3.4-beta3
         restart: unless-stopped
@@ -201,11 +96,11 @@ services:
         ports:
             - "8999:8999"
         depends_on:
-            - electrs
+            - fulcrum
         command: "./wait-for-it.sh mempool-db:3306 --timeout=720 --strict -- ./start.sh"
         environment:
             MEMPOOL_BACKEND: "electrum"
-            ELECTRUM_HOST: "electrs"
+            ELECTRUM_HOST: "fulcrum"
             ELECTRUM_PORT: "50001"
             ELECTRUM_TLS_ENABLED: "false"
             CORE_RPC_HOST: "${BITCOIN_HOST}"
