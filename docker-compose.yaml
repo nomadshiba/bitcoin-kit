@@ -45,7 +45,7 @@ services:
                         https://raw.githubusercontent.com/Retropex/datum-docker/main/settings/datum_gateway_config.json;
                 fi
                 jq \
-                    ".bitcoind.rpcurl = \"http://${BITCOIN_HOST}:${BITCOIN_RPC_PORT}\" 
+                    ".bitcoind.rpcurl = \"${BITCOIN_HOST}:${BITCOIN_RPC_PORT}\" 
                     | .bitcoind.rpcuser = \"${BITCOIN_RPC_USER}\" 
                     | .bitcoind.rpcpassword = \"${BITCOIN_RPC_PASS}\" 
                     | .api.admin_password = \"${DATUM_ADMIN_PASS}\" 
@@ -56,13 +56,14 @@ services:
                 echo "✅ Config written to /datum/config.json";
                 cat /datum/config.json;
                 echo "🔐 Setting permissions...";
-                chown -R 999:999 /datum # datumuser
+                chown -R 1000:1000 /datum # datum user in the image
                 echo "✅ Setup complete!";
                 tail -f /dev/null;
             '
 
     datum-gateway:
         image: ghcr.io/retropex/datum:v1.14-blake2b-2@sha256:5895b55a5a1b8d76fbe49a6fbaaed3bdc98a847299e8b3107e631146faa6d58a
+        command: ["./datum_gateway", "-c", "/app/config/config.json"]
         extra_hosts:
             - "host.docker.internal:host-gateway"
             - "host.containers.internal:host-gateway"
